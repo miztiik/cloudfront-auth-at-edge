@@ -1,0 +1,169 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Template to setup S3 Static site, CloudFront distribution with OAI &
+  Lambda@Edge.
+
+  '
+Parameters:
+  debugMODE:
+    Description: Do you want to enable detailed logging.
+    Default: 'False'
+    Type: String
+    AllowedValues:
+    - 'True'
+    - 'False'
+    ConstraintDescription: Must be boolean.
+  ServiceName:
+    Type: String
+    Description: Name of the service
+    Default: SPA
+  StackEnv:
+    Type: String
+    Description: Environment Name
+    Default: dev
+  FunctionNameSuffix:
+    Description: Suffix to append to the Lambda functions.
+    Type: String
+    Default: Mystique
+Globals:
+  Function:
+    Runtime: python3.7
+    Timeout: 5
+    MemorySize: 128
+Resources:
+  cdn1:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: CDN for S3-backed website
+        DefaultCacheBehavior:
+          Compress: true
+          AllowedMethods:
+          - DELETE
+          - GET
+          - HEAD
+          - OPTIONS
+          - PATCH
+          - POST
+          - PUT
+          ForwardedValues:
+            Headers:
+            - CloudFront-Viewer-Country
+            - Origin
+            Cookies:
+              Forward: none
+            QueryString: 'false'
+          TargetOriginId: MystiqueCDN
+          ViewerProtocolPolicy: redirect-to-https
+          LambdaFunctionAssociations:
+          - EventType: origin-response
+            LambdaFunctionARN:
+              Ref: originRespFunction.Version
+          - EventType: viewer-request
+            LambdaFunctionARN:
+              Ref: viewerReqFunction.Version
+        DefaultRootObject: index.html
+        Enabled: true
+        PriceClass: PriceClass_100
+        Origins:
+        - DomainName:
+            Fn::GetAtt:
+            - spaHostBucket
+            - DomainName
+          Id: MystiqueCDN
+          S3OriginConfig:
+            OriginAccessIdentity:
+              Fn::Sub: origin-access-identity/cloudfront/${mystiqueOriginAccessIdentity}
+  mystiqueOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: Mystique
+  cdnBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: spaHostBucket
+      PolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            AWS:
+              Fn::Sub: arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity
+                ${mystiqueOriginAccessIdentity}
+          Action: s3:GetObject
+          Resource:
+            Fn::Sub:
+            - ${BucketArn}/*
+            - BucketArn:
+                Fn::GetAtt:
+                - spaHostBucket
+                - Arn
+  spaHostBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+    Metadata:
+      MystiqueName: spaHostBucket
+  viewerReqFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description:
+        Fn::Sub: AWS Lambda@Edge Stack ${AWS::StackName} Function
+      FunctionName:
+        Fn::Sub: ${AWS::StackName}-${StackEnv}-viewerReq
+      Runtime: nodejs8.10
+      CodeUri: s3://sam-templates-011/88df95e14fe9d6bbd9b99ffd0fc78822
+      Handler: viewerReq.handler
+      AutoPublishAlias: live
+      Role:
+        Fn::GetAtt:
+        - LambdaEdgeFunctionRole
+        - Arn
+  originRespFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description:
+        Fn::Sub: AWS Lambda@Edge Stack ${AWS::StackName} Function
+      FunctionName:
+        Fn::Sub: ${AWS::StackName}-${StackEnv}-originResp
+      Runtime: nodejs8.10
+      CodeUri: s3://sam-templates-011/866870a655fdb1e86f693e56f81b6b47
+      Handler: originResp.handler
+      AutoPublishAlias: live
+      Role:
+        Fn::GetAtt:
+        - LambdaEdgeFunctionRole
+        - Arn
+  LambdaEdgeFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: AllowLambdaServiceToAssumeRole
+          Effect: Allow
+          Action:
+          - sts:AssumeRole
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+            - edgelambda.amazonaws.com
+Outputs:
+  StaticSiteUrl:
+    Description: S3 Static Site Url
+    Value:
+      Fn::GetAtt:
+      - spaHostBucket
+      - DomainName
+  CFDistributionUrl:
+    Description: Cloudfront Distribution Domain Name
+    Value:
+      Fn::GetAtt:
+      - cdn1
+      - DomainName

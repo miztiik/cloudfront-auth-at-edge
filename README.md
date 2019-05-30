@@ -1,0 +1,1 @@
+cloudfront-auth-at-edge
